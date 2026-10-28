@@ -513,6 +513,23 @@ jlongArray convert_table_for_return(JNIEnv* env,
   return outcol_handles.get_jArray();
 }
 
+/**
+ * @brief Detach all columns from the specified table and return the table's row count followed
+ * by pointers to the columns, so that a table with zero columns keeps its row count.
+ */
+jlongArray convert_table_with_row_count_for_return(JNIEnv* env,
+                                                   std::unique_ptr<cudf::table>&& table_result)
+{
+  auto const num_rows                            = table_result->num_rows();
+  std::vector<std::unique_ptr<cudf::column>> ret = table_result->release();
+  cudf::jni::native_jlongArray outcol_handles(env, ret.size() + 1);
+  outcol_handles[0] = num_rows;
+  std::transform(ret.begin(), ret.end(), outcol_handles.begin() + 1, [](auto& col) {
+    return release_as_jlong(col);
+  });
+  return outcol_handles.get_jArray();
+}
+
 jlongArray convert_table_for_return(JNIEnv* env,
                                     std::unique_ptr<cudf::table>& table_result,
                                     std::vector<std::unique_ptr<cudf::column>>&& extra_columns)
@@ -1092,6 +1109,7 @@ void set_nullable(ArrowSchema* schema)
 }  // namespace cudf
 
 using cudf::jni::convert_table_for_return;
+using cudf::jni::convert_table_with_row_count_for_return;
 using cudf::jni::ptr_as_jlong;
 using cudf::jni::release_as_jlong;
 
@@ -1119,9 +1137,14 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_removeNullMasksIfNeeded(J
 
 JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_Table_createCudfTableView(JNIEnv* env,
                                                                       jclass,
-                                                                      jlongArray j_cudf_columns)
+                                                                      jlongArray j_cudf_columns,
+                                                                      jlong j_row_count)
 {
   JNI_NULL_CHECK(env, j_cudf_columns, "columns are null", 0);
+  JNI_ARG_CHECK(env,
+                j_row_count >= 0 && j_row_count <= std::numeric_limits<cudf::size_type>::max(),
+                "row count out of range",
+                0);
 
   JNI_TRY
   {
@@ -1129,7 +1152,8 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_Table_createCudfTableView(JNIEnv* en
     cudf::jni::native_jpointerArray<cudf::column_view> n_cudf_columns(env, j_cudf_columns);
 
     std::vector<cudf::column_view> column_views = n_cudf_columns.get_dereferenced();
-    return ptr_as_jlong(new cudf::table_view(column_views));
+    return ptr_as_jlong(
+      new cudf::table_view(column_views, static_cast<cudf::size_type>(j_row_count)));
   }
   JNI_CATCH(env, 0);
 }
@@ -1161,7 +1185,9 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_columnViewsFromPacked(JNI
     JNI_NULL_CHECK(env, metadata_address, "metadata buffer address is null", nullptr);
     cudf::table_view table = cudf::unpack(static_cast<uint8_t const*>(metadata_address),
                                           reinterpret_cast<uint8_t const*>(j_data_address));
-    cudf::jni::native_jlongArray views(env, table.num_columns());
+    // The row count goes first so that a table with zero columns keeps it.
+    cudf::jni::native_jlongArray views(env, table.num_columns() + 1);
+    views[0] = table.num_rows();
     for (int i = 0; i < table.num_columns(); i++) {
       // TODO Exception handling is not ideal, if no exceptions are thrown ownership of the new cv
       // is passed to Java. If an exception is thrown we need to free it, but this needs to be
@@ -1172,7 +1198,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_columnViewsFromPacked(JNI
       // In the ideal case we would keep the view where it is at, and pass in a pointer to it
       // That pointer would then be copied when Java takes ownership of it, but that adds an
       // extra JNI call that I would like to avoid for performance reasons.
-      views[i] = ptr_as_jlong(new cudf::column_view(table.column(i)));
+      views[i + 1] = ptr_as_jlong(new cudf::column_view(table.column(i)));
     }
     views.commit();
 
@@ -3886,7 +3912,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_crossJoin(JNIEnv* env,
     cudf::jni::auto_set_device(env);
     auto const left  = reinterpret_cast<cudf::table_view const*>(left_table);
     auto const right = reinterpret_cast<cudf::table_view const*>(right_table);
-    return convert_table_for_return(env, cudf::cross_join(*left, *right));
+    return convert_table_with_row_count_for_return(env, cudf::cross_join(*left, *right));
   }
   JNI_CATCH(env, NULL);
 }
@@ -3915,7 +3941,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_concatenate(JNIEnv* env,
     cudf::jni::auto_set_device(env);
     cudf::jni::native_jpointerArray<cudf::table_view> tables(env, table_handles);
     std::vector<cudf::table_view> const to_concat = tables.get_dereferenced();
-    return convert_table_for_return(env, cudf::concatenate(to_concat));
+    return convert_table_with_row_count_for_return(env, cudf::concatenate(to_concat));
   }
   JNI_CATCH(env, NULL);
 }
@@ -4247,7 +4273,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_filter(JNIEnv* env,
     cudf::jni::auto_set_device(env);
     auto const input = reinterpret_cast<cudf::table_view const*>(input_jtable);
     auto const mask  = reinterpret_cast<cudf::column_view const*>(mask_jcol);
-    return convert_table_for_return(env, cudf::apply_retention_mask(*input, *mask));
+    return convert_table_with_row_count_for_return(env, cudf::apply_retention_mask(*input, *mask));
   }
   JNI_CATCH(env, 0);
 }
@@ -4322,7 +4348,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_gather(
     auto const map   = reinterpret_cast<cudf::column_view const*>(j_map);
     auto bounds_policy =
       check_bounds ? cudf::out_of_bounds_policy::NULLIFY : cudf::out_of_bounds_policy::DONT_CHECK;
-    return convert_table_for_return(env, cudf::gather(*input, *map, bounds_policy));
+    return convert_table_with_row_count_for_return(env, cudf::gather(*input, *map, bounds_policy));
   }
   JNI_CATCH(env, 0);
 }
@@ -4376,7 +4402,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_repeatStaticCount(JNIEnv*
   {
     cudf::jni::auto_set_device(env);
     auto const input = reinterpret_cast<cudf::table_view const*>(input_jtable);
-    return convert_table_for_return(env, cudf::repeat(*input, count));
+    return convert_table_with_row_count_for_return(env, cudf::repeat(*input, count));
   }
   JNI_CATCH(env, 0);
 }
@@ -4393,7 +4419,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_repeatColumnCount(JNIEnv*
     cudf::jni::auto_set_device(env);
     auto const input = reinterpret_cast<cudf::table_view const*>(input_jtable);
     auto const count = reinterpret_cast<cudf::column_view const*>(count_jcol);
-    return convert_table_for_return(env, cudf::repeat(*input, *count));
+    return convert_table_with_row_count_for_return(env, cudf::repeat(*input, *count));
   }
   JNI_CATCH(env, 0);
 }
