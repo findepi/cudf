@@ -6,6 +6,10 @@
 
 #include <cudf/ast/ast_operator.hpp>
 #include <cudf/detail/operators/operators.cuh>
+// The operator traits below test whether an operator accepts each type by value, which needs the
+// type to be complete. string_view and list_view must be defined here, not just declared;
+// otherwise the traits report the operators as invalid for them.
+#include <cudf/lists/list_view.hpp>
 #include <cudf/strings/string_view.cuh>
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/traits.hpp>

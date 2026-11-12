@@ -15,6 +15,7 @@
 #include <cudf/binaryop.hpp>
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
+#include <cudf/copying.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/filling.hpp>
 #include <cudf/scalar/scalar.hpp>
@@ -302,6 +303,76 @@ TYPED_TEST(TransformTest, IsNull)
   result           = Executor::compute_column(table, expression2);
   auto expected3   = column_wrapper<bool>({1, 0, 0, 1}, cudf::test::iterators::no_nulls());
   CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected3, result->view(), verbosity);
+}
+
+template <typename T>
+struct TransformListTest : public cudf::test::BaseFixture {};
+
+using ListExecutors = cudf::test::Types<executor_ast>;
+
+TYPED_TEST_SUITE(TransformListTest, ListExecutors);
+
+TYPED_TEST(TransformListTest, IsNullList)
+{
+  using Executor = TypeParam;
+  using lists    = cudf::test::lists_column_wrapper<int8_t>;
+
+  auto c_0   = lists{{{1}, {}, {2, 3}, {4}}, cudf::test::iterators::nulls_at({1, 3})};
+  auto c_1   = column_wrapper<int32_t>{{5, 6, 7, 8}, {1, 1, 0, 1}};
+  auto c_2   = lists{{1}, {}, {2, 3}, {4}};
+  auto table = cudf::table_view{{c_0, c_1, c_2}};
+
+  auto col_ref_0  = cudf::ast::column_reference(0);
+  auto col_ref_1  = cudf::ast::column_reference(1);
+  auto col_ref_2  = cudf::ast::column_reference(2);
+  auto is_null_0  = cudf::ast::operation(cudf::ast::ast_operator::IS_NULL, col_ref_0);
+  auto is_null_1  = cudf::ast::operation(cudf::ast::ast_operator::IS_NULL, col_ref_1);
+  auto is_null_2  = cudf::ast::operation(cudf::ast::ast_operator::IS_NULL, col_ref_2);
+  auto not_null_0 = cudf::ast::operation(cudf::ast::ast_operator::NOT, is_null_0);
+  auto either     = cudf::ast::operation(cudf::ast::ast_operator::LOGICAL_OR, is_null_0, is_null_1);
+
+  auto result   = Executor::compute_column(table, is_null_0);
+  auto expected = column_wrapper<bool>({0, 1, 0, 1}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
+
+  result   = Executor::compute_column(table, not_null_0);
+  expected = column_wrapper<bool>({1, 0, 1, 0}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
+
+  result   = Executor::compute_column(table, either);
+  expected = column_wrapper<bool>({0, 1, 1, 1}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
+
+  result   = Executor::compute_column(table, is_null_2);
+  expected = column_wrapper<bool>({0, 0, 0, 0}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
+
+  // Sliced input: validity must account for the column offset.
+  auto sliced       = cudf::slice(c_0, {1, 4}).front();
+  auto sliced_table = cudf::table_view{{sliced}};
+  result            = Executor::compute_column(sliced_table, is_null_0);
+  expected          = column_wrapper<bool>({1, 0, 1}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
+}
+
+TYPED_TEST(TransformListTest, ListRejectedByOtherOperators)
+{
+  using Executor = TypeParam;
+  using lists    = cudf::test::lists_column_wrapper<int8_t>;
+
+  auto c_0   = lists{{{1}, {2}}, cudf::test::iterators::nulls_at({1})};
+  auto table = cudf::table_view{{c_0, c_0}};
+
+  auto col_ref_0 = cudf::ast::column_reference(0);
+  auto col_ref_1 = cudf::ast::column_reference(1);
+  auto identity  = cudf::ast::operation(cudf::ast::ast_operator::IDENTITY, col_ref_0);
+  auto equal     = cudf::ast::operation(cudf::ast::ast_operator::EQUAL, col_ref_0, col_ref_1);
+  auto nested    = cudf::ast::operation(cudf::ast::ast_operator::IS_NULL, identity);
+
+  EXPECT_THROW(Executor::compute_column(table, col_ref_0), std::logic_error);
+  EXPECT_THROW(Executor::compute_column(table, identity), std::logic_error);
+  EXPECT_THROW(Executor::compute_column(table, equal), std::logic_error);
+  EXPECT_THROW(Executor::compute_column(table, nested), std::logic_error);
 }
 
 TYPED_TEST(TransformTest, BasicAddition)

@@ -10,6 +10,7 @@
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/utilities/assert.cuh>
+#include <cudf/lists/list_view.hpp>
 #include <cudf/table/table_device_view.cuh>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
@@ -343,7 +344,35 @@ struct expression_evaluator {
     return {};
   }
 
+  /**
+   * @brief Resolves a list column reference into a value that carries only the row's validity.
+   *
+   * IS_NULL is the only operator that accepts a `list_view`, and it reads nothing but validity.
+   * List literals and intermediates do not exist, so the reference is always a column.
+   */
   template <typename Element>
+    requires(cuda::std::same_as<Element, cudf::list_view>)
+  __device__ inline possibly_null_value_t<Element, has_nulls> resolve_input(
+    detail::device_data_reference const& input_reference,
+    IntermediateDataType<has_nulls>* thread_intermediate_storage,
+    cudf::size_type left_row_index,
+    cudf::size_type right_row_index = {}) const
+  {
+    using ReturnType = possibly_null_value_t<Element, has_nulls>;
+    if constexpr (has_nulls) {
+      auto const is_left   = input_reference.table_source == table_reference::LEFT;
+      auto const& table    = is_left ? left : right;
+      auto const row_index = is_left ? left_row_index : right_row_index;
+      return table.column(input_reference.data_index).is_valid(row_index) ? ReturnType{Element{}}
+                                                                          : ReturnType{};
+    } else {
+      return ReturnType{};
+    }
+  }
+
+  template <typename Element>
+    requires(!column_device_view::has_element_accessor<Element>() &&
+             !cuda::std::same_as<Element, cudf::list_view>)
   __device__ inline possibly_null_value_t<Element, has_nulls> resolve_input(
     detail::device_data_reference const& device_data_reference,
     IntermediateDataType<has_nulls>* thread_intermediate_storage,

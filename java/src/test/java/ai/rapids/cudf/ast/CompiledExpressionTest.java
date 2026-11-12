@@ -9,12 +9,15 @@ import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.CudfException;
 import ai.rapids.cudf.CudfTestBase;
 import ai.rapids.cudf.DType;
+import ai.rapids.cudf.HostColumnVector.BasicType;
+import ai.rapids.cudf.HostColumnVector.ListType;
 import ai.rapids.cudf.Scalar;
 import ai.rapids.cudf.Table;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.NullSource;
@@ -1308,6 +1311,101 @@ public class CompiledExpressionTest extends CudfTestBase {
   }
 
   /** Verifies that ExpressionType.COLUMN_NAME_REFERENCE has ordinal 5, matching the native plan's expected node-type ID. */
+  /** How a test evaluates one expression over a table. */
+  private enum ListExecutor {
+    AST {
+      @Override
+      ColumnVector compute(AstExpression expr, Table table) {
+        try (CompiledExpression compiled = expr.compile()) {
+          return compiled.computeColumn(table);
+        }
+      }
+    };
+
+    abstract ColumnVector compute(AstExpression expr, Table table);
+  }
+
+  // A VARBINARY column, as LIST<INT8>.
+  private static final ListType VARBINARY = new ListType(true, new BasicType(false, DType.INT8));
+
+  private static Table varbinaryTable() {
+    return new Table.TestBuilder()
+        .column(VARBINARY,
+            Arrays.asList((byte) 1), null, Arrays.asList(), Arrays.asList((byte) 2, (byte) 3), null)
+        .column(10, 20, null, 40, 50)
+        .build();
+  }
+
+  @ParameterizedTest
+  @EnumSource(ListExecutor.class)
+  void testIsNullOnList(ListExecutor executor) {
+    AstExpression isNull = new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(0));
+    try (Table t = varbinaryTable();
+         ColumnVector actual = executor.compute(isNull, t);
+         ColumnVector expected = ColumnVector.fromBooleans(false, true, false, false, true)) {
+      assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(ListExecutor.class)
+  void testIsNullOnListWithoutNulls(ListExecutor executor) {
+    AstExpression isNull = new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(0));
+    try (Table t = new Table.TestBuilder()
+             .column(VARBINARY, Arrays.asList((byte) 1), Arrays.asList())
+             .build();
+         ColumnVector actual = executor.compute(isNull, t);
+         ColumnVector expected = ColumnVector.fromBooleans(false, false)) {
+      assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(ListExecutor.class)
+  void testIsNullOnSlicedList(ListExecutor executor) {
+    AstExpression isNull = new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(0));
+    try (Table t = varbinaryTable();
+         ColumnVector sliced = t.getColumn(0).subVector(1, 4);
+         Table slicedTable = new Table(sliced);
+         ColumnVector actual = executor.compute(isNull, slicedTable);
+         ColumnVector expected = ColumnVector.fromBooleans(true, false, false)) {
+      assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(ListExecutor.class)
+  void testIsNullOnListInLargerExpression(ListExecutor executor) {
+    // NOT(list IS NULL) OR (int IS NULL)
+    AstExpression expr = new BinaryOperation(BinaryOperator.LOGICAL_OR,
+        new UnaryOperation(UnaryOperator.NOT,
+            new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(0))),
+        new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(1)));
+    try (Table t = varbinaryTable();
+         ColumnVector actual = executor.compute(expr, t);
+         ColumnVector expected = ColumnVector.fromBooleans(true, false, true, true, false)) {
+      assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(ListExecutor.class)
+  void testListRejectedByOtherOperators(ListExecutor executor) {
+    List<AstExpression> rejected = Arrays.asList(
+        new ColumnReference(0),
+        new UnaryOperation(UnaryOperator.IDENTITY, new ColumnReference(0)),
+        new UnaryOperation(UnaryOperator.NOT, new ColumnReference(0)),
+        new UnaryOperation(UnaryOperator.IS_NULL,
+            new UnaryOperation(UnaryOperator.IDENTITY, new ColumnReference(0))),
+        new BinaryOperation(BinaryOperator.EQUAL, new ColumnReference(0), new ColumnReference(0)));
+    try (Table t = varbinaryTable()) {
+      for (AstExpression expr : rejected) {
+        Assertions.assertThrows(CudfException.class, () -> executor.compute(expr, t).close(),
+            () -> executor + " should reject " + expr);
+      }
+    }
+  }
+
   @Test
   void testColumnNameReferenceTypeOrdinalMatchesPlan() {
     Assertions.assertEquals(5, AstExpression.ExpressionType.COLUMN_NAME_REFERENCE.ordinal());
