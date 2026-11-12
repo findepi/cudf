@@ -1320,6 +1320,24 @@ public class CompiledExpressionTest extends CudfTestBase {
           return compiled.computeColumn(table);
         }
       }
+    },
+    JIT {
+      @Override
+      ColumnVector compute(AstExpression expr, Table table) {
+        try (CompiledExpression compiled = expr.compileJit()) {
+          return compiled.computeColumn(table);
+        }
+      }
+    },
+    JIT_PROGRAM {
+      @Override
+      ColumnVector compute(AstExpression expr, Table table) {
+        try (CompiledExpression compiled = expr.compileJit();
+             AstJitProgram program = AstJitProgram.compile(table, compiled);
+             Table result = program.computeTable(table)) {
+          return result.getColumn(0).incRefCount();
+        }
+      }
     };
 
     abstract ColumnVector compute(AstExpression expr, Table table);
@@ -1385,6 +1403,21 @@ public class CompiledExpressionTest extends CudfTestBase {
          ColumnVector actual = executor.compute(expr, t);
          ColumnVector expected = ColumnVector.fromBooleans(true, false, true, true, false)) {
       assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @Test
+  void testIsNullOnListMultiOutputJit() {
+    AstExpression listIsNull = new UnaryOperation(UnaryOperator.IS_NULL, new ColumnReference(0));
+    AstExpression intIdentity = new UnaryOperation(UnaryOperator.IDENTITY, new ColumnReference(1));
+    try (Table t = varbinaryTable();
+         CompiledExpression first = listIsNull.compileJit();
+         CompiledExpression second = intIdentity.compileJit();
+         Table actual = CompiledExpression.computeTableJit(t, first, second);
+         ColumnVector expectedIsNull = ColumnVector.fromBooleans(false, true, false, false, true);
+         ColumnVector expectedIdentity = ColumnVector.fromBoxedInts(10, 20, null, 40, 50)) {
+      assertColumnsAreEqual(expectedIsNull, actual.getColumn(0));
+      assertColumnsAreEqual(expectedIdentity, actual.getColumn(1));
     }
   }
 

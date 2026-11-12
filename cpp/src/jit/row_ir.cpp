@@ -101,6 +101,7 @@ enum class [[nodiscard]] types : uint64_t {
   DURATION_MICROSECONDS  = 0x400000,
   DURATION_NANOSECONDS   = 0x800000,
   STRING                 = 0x1000000,
+  LIST                   = 0x2000000,
   SIGNED_INTEGERS        = INT8 | INT16 | INT32 | INT64,
   UNSIGNED_INTEGERS      = UINT8 | UINT16 | UINT32 | UINT64,
   INTEGERS               = SIGNED_INTEGERS | UNSIGNED_INTEGERS,
@@ -109,8 +110,10 @@ enum class [[nodiscard]] types : uint64_t {
   DECIMALS               = DECIMAL32 | DECIMAL64 | DECIMAL128,
   ARITHMETIC             = INTEGERS | FLOATS | DECIMALS,
   SIGNED_ARITHMETIC      = SIGNED_INTEGERS | FLOATS | DECIMALS,
-  ALL                    = 0x0FFFFFFF,
-  INPUT                  = 0x20000000,
+  /// Every type whose value an operator can read. A LIST input carries only validity.
+  ALL   = 0x01FFFFFF,
+  ANY   = ALL | LIST,  ///< Every type, including validity-only LIST
+  INPUT = 0x20000000,
 };
 
 /**
@@ -154,7 +157,7 @@ struct [[nodiscard]] opcode_info {
       {"GET_INPUT", PROPAGATE, false, false, {}, INPUT},
       {"SET_OUTPUT", PROPAGATE, false, false, {ALL}, NONE},
       {"IDENTITY", PROPAGATE, false, false, {ALL}, ARG0},
-      {"IS_NULL", ALWAYS_VALID, true, false, {ALL}, BOOL8},
+      {"IS_NULL", ALWAYS_VALID, true, false, {ANY}, BOOL8},
       {"COALESCE", PROPAGATE, true, false, {ALL, ARG0}, ARG0},
       {"PREDICATE", ALWAYS_VALID, true, false, {BOOL8}, ARG0},
       {"ADD", PROPAGATE, false, false, {ARITHMETIC, ARG0}, ARG0},
@@ -335,6 +338,7 @@ row_ir::types as_type(data_type type)
     case type_id::DURATION_MICROSECONDS: return types::DURATION_MICROSECONDS;
     case type_id::DURATION_NANOSECONDS: return types::DURATION_NANOSECONDS;
     case type_id::STRING: return types::STRING;
+    case type_id::LIST: return types::LIST;
     default:
       CUDF_FAIL(std::format("Unsupported data type for Row IR: {}", type_to_name(type)),
                 std::invalid_argument);
@@ -369,6 +373,7 @@ type_id as_type_id(types type)
     case types::DURATION_MICROSECONDS: return type_id::DURATION_MICROSECONDS;
     case types::DURATION_NANOSECONDS: return type_id::DURATION_NANOSECONDS;
     case types::STRING: return type_id::STRING;
+    case types::LIST: return type_id::LIST;
     default:
       CUDF_FAIL(std::format("Invalid typing for {}: {}", __FUNCTION__, static_cast<int>(type)),
                 std::invalid_argument);

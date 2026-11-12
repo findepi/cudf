@@ -515,7 +515,8 @@ void perform_checks(std::variant<udf_source_type, lto_binary_type> source_type,
                std::invalid_argument);
 
   static constexpr auto is_input_value_supported = [](auto const& c) {
-    return is_fixed_width(c.type()) || c.type().id() == type_id::STRING || is_dictionary(c.type());
+    return is_fixed_width(c.type()) || c.type().id() == type_id::STRING ||
+           c.type().id() == type_id::LIST || is_dictionary(c.type());
   };
   static constexpr auto is_supported_input_type = [&](auto const& c) {
     auto col = std::visit([](auto const& c) { return jit::as_column_view(c); }, c);
@@ -526,7 +527,7 @@ void perform_checks(std::variant<udf_source_type, lto_binary_type> source_type,
   CUDF_EXPECTS(
     std::none_of(
       inputs.begin(), inputs.end(), [&](auto const& in) { return !is_supported_input_type(in); }),
-    "Transforms only support input of fixed-width, string, or dictionary types",
+    "Transforms only support input of fixed-width, string, list, or dictionary types",
     std::invalid_argument);
 
   if (!in_row_size.has_value()) {

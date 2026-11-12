@@ -305,14 +305,7 @@ TYPED_TEST(TransformTest, IsNull)
   CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected3, result->view(), verbosity);
 }
 
-template <typename T>
-struct TransformListTest : public cudf::test::BaseFixture {};
-
-using ListExecutors = cudf::test::Types<executor_ast>;
-
-TYPED_TEST_SUITE(TransformListTest, ListExecutors);
-
-TYPED_TEST(TransformListTest, IsNullList)
+TYPED_TEST(TransformTest, IsNullList)
 {
   using Executor = TypeParam;
   using lists    = cudf::test::lists_column_wrapper<int8_t>;
@@ -355,7 +348,37 @@ TYPED_TEST(TransformListTest, IsNullList)
   CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view(), verbosity);
 }
 
-TYPED_TEST(TransformListTest, ListRejectedByOtherOperators)
+// A list literal exists only as a scalar_column_view, which only the JIT executors accept.
+TEST_F(TransformProgramTest, IsNullListLiteral)
+{
+  using lists = cudf::test::lists_column_wrapper<int8_t>;
+
+  auto input      = column_wrapper<int32_t>{1, 2, 3};
+  auto table      = cudf::table_view{{input}};
+  auto valid_list = lists{{2, 3}};
+  auto null_list  = lists{{{2, 3}}, cudf::test::iterators::nulls_at({0})};
+
+  auto run = [&](cudf::column_view literal_column, auto&& compute) {
+    auto literal    = cudf::ast::literal{cudf::scalar_column_view{literal_column}};
+    auto expression = cudf::ast::operation{cudf::ast::ast_operator::IS_NULL, literal};
+    return compute(expression);
+  };
+  auto jit = [&](cudf::ast::expression const& expr) {
+    return executor_jit::compute_column(table, expr);
+  };
+  auto program = [&](cudf::ast::expression const& expr) {
+    return executor_transform_program::compute_column(table, expr);
+  };
+
+  auto all_false = column_wrapper<bool>({0, 0, 0}, cudf::test::iterators::no_nulls());
+  auto all_true  = column_wrapper<bool>({1, 1, 1}, cudf::test::iterators::no_nulls());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(all_false, run(valid_list, jit)->view(), verbosity);
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(all_true, run(null_list, jit)->view(), verbosity);
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(all_false, run(valid_list, program)->view(), verbosity);
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(all_true, run(null_list, program)->view(), verbosity);
+}
+
+TYPED_TEST(TransformTest, ListRejectedByOtherOperators)
 {
   using Executor = TypeParam;
   using lists    = cudf::test::lists_column_wrapper<int8_t>;

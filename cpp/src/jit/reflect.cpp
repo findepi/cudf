@@ -4,6 +4,7 @@
  */
 
 #include <cudf/column/column_child_offsets.hpp>
+#include <cudf/lists/list_view.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/concepts.hpp>
 #include <cudf/utilities/error.hpp>
@@ -33,6 +34,13 @@ struct reflect_input_element_fn {
   {
     auto type = data_type{spec.type};
     return type_to_name(use_physical_type ? jit::physical_type_of(type) : type);
+  }
+
+  template <typename T>
+    requires(std::is_same_v<T, cudf::list_view>)
+  std::string operator()(transform_input_spec const&, bool) const
+  {
+    return "cudf::list_view";
   }
 
   template <cudf::concepts::dictionary T>
@@ -87,6 +95,13 @@ struct reflect_input_value_fn {
   {
     auto type = data_type{spec.type};
     return type_to_name(use_physical_type ? jit::physical_type_of(type) : type);
+  }
+
+  template <typename T>
+    requires(std::is_same_v<T, cudf::list_view>)
+  std::string operator()(transform_input_spec const&, bool) const
+  {
+    return "cudf::list_view";
   }
 
   template <cudf::concepts::dictionary T>
@@ -182,8 +197,8 @@ std::string reflect_input_value_type(transform_input_spec const& spec, bool use_
 transform_input_spec make_input_spec(column_view const& column, bool is_scalar)
 {
   CUDF_EXPECTS(is_fixed_width(column.type()) || is_dictionary(column.type()) ||
-                 column.type().id() == type_id::STRING,
-               "Column type must be fixed-width, dictionary, or string",
+                 column.type().id() == type_id::STRING || column.type().id() == type_id::LIST,
+               "Column type must be fixed-width, dictionary, string, or list",
                std::runtime_error);
 
   transform_input_spec result{.type = column.type().id(), .is_scalar = is_scalar};

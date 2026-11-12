@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cudf/column/column_device_view_base.cuh>
+#include <cudf/lists/list_view.hpp>
 #include <cudf/types.hpp>
 
 #include <cuda/std/optional>
@@ -37,7 +38,12 @@ struct column_accessor {
 
   static __device__ auto element(auto const* __restrict__ columns, size_type row)
   {
-    return columns[index].template element<element_type>(map_index(row));
+    if constexpr (cuda::std::is_same_v<element_type, list_view>) {
+      // A list input carries only validity; its contents are never read.
+      return list_view{};
+    } else {
+      return columns[index].template element<element_type>(map_index(row));
+    }
   }
 
   static __device__ bool is_null(auto const* __restrict__ columns, size_type row)
@@ -52,7 +58,13 @@ struct column_accessor {
 
   static __device__ auto nullable_element(auto const* __restrict__ columns, size_type row)
   {
-    return columns[index].template nullable_element<element_type>(map_index(row));
+    if constexpr (cuda::std::is_same_v<element_type, list_view>) {
+      // A list input carries only validity; its contents are never read.
+      return columns[index].is_null(map_index(row)) ? cuda::std::optional<list_view>{}
+                                                    : cuda::std::optional<list_view>{list_view{}};
+    } else {
+      return columns[index].template nullable_element<element_type>(map_index(row));
+    }
   }
 
   static __device__ void set_null_mask_word(auto const* __restrict__ columns,
